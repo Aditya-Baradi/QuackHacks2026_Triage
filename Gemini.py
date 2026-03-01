@@ -8,21 +8,23 @@ import json
 from elevenlabs.client import ElevenLabs
 from elevenlabs.play import play
 from main import analyze_audio_file
+import triageService as ts
+import ast
 
 # Load variables from .env
 load_dotenv()
-'''
-client = ElevenLabs(
+
+EL_client = ElevenLabs(
     api_key=os.getenv("ELEVEN_LABS_API_KEY")
 )
 
-audio = client.text_to_speech.convert(
+audio = EL_client.text_to_speech.convert(
     text="The first move is what sets everything in motion.",
     voice_id="JBFqnCBsd6RMkjVDRZzb",
     model_id="eleven_multilingual_v2",
     output_format="mp3_44100_128",
 )
-'''
+
 
 with open("question_weights.json", "r") as f:
     weights = json.load(f)
@@ -73,6 +75,7 @@ Answer each question by hitting the record button and stop button after your res
 response = client.responses.create(model="gpt-5.2", input=introduction)
 print(response.output_text)
 
+master_transcript = ""
 urgency = 0
 pathway = 0
 affirmative_responses = []
@@ -87,6 +90,12 @@ def ask_questions(questions):
         #AI Asks question
         response = client.responses.create(model="gpt-5.2", input=(prompt+formatted_question))
         print(response.output_text)
+        audio = EL_client.text_to_speech.convert(
+        text= response.output_text,
+        voice_id="JBFqnCBsd6RMkjVDRZzb",
+        model_id="eleven_multilingual_v2",
+        output_format="mp3_44100_128",
+    )
 
         #Wait for response before asking next question / Record audio response. Press enter to continue
         audio_path = RecordingAudio.record_audio(index)
@@ -121,7 +130,6 @@ def ask_questions(questions):
             match (answer_analysis):
                 case "YES":
                     print("Answered YES\n")
-                    global urgency
                     affirmative_responses.append(question_num)
                     print(f"NUM: {question_num}")
                     urgency += get_weight(question_num, weights)
@@ -135,6 +143,9 @@ def ask_questions(questions):
             print("ALARM: Urgency threshold exceeded. Immediate attention required.")
             break
         index += 1
+        global master_transcript
+        master_transcript += f"{formatted_question}\n"
+        master_transcript += f"outputs\\patient_auto_patient\\session_session_20260301\\q{index}_transcript.txt\n"
 
 def analyze_urgency(question,response):
     #Use GPT to analyze transcript and determine urgency and next questions
@@ -193,9 +204,46 @@ def analyze_Sypmtoms(question,response):
     analysis = client.responses.create(model="gpt-5.2", input=analyze_prompt)
     return analysis.output_text.strip()
 
+def analyze_Logistics(transcript):
+    #Use GPT to analyze transcript and determine urgency and next questions
+    analyze_prompt = f"""
+        You are an AI triage assistant modeled after an emergency department intake nurse.
 
+        Your role is to gather information and assess urgency, NOT diagnose or treat.
+
+        Take this transcript and return to me an array of the following demographic information:
+        First Name, Last Name, Date of Birth, Phone Number, Sex
+
+        format the response as an array in this format:
+        ["First Name", "Last Name", "Date of Birth", "Phone Number", "Sex"]
+        Only return the array and nothing else. Do not add any additional information or context.
+    """
+    analysis = client.responses.create(model="gpt-5.2", input=analyze_prompt)
+    return analysis.output_text.strip()
+
+def analyze_Master_Transcript(transcript):
+    #Use GPT to analyze transcript and determine urgency and next questions
+    analyze_prompt = f"""
+        You are an AI triage assistant modeled after an emergency department intake nurse.
+
+        Your role is to gather information and assess urgency, NOT diagnose or treat.
+
+        Take this transcript and summarize the patient's conversation with you.
+        Extract any relevany information that could be helpful for the nursing staff
+        to know when the patient arrives. This could include information about their symptoms, 
+        their living situation, their support system, or any other information that could 
+        be helpful for the nursing staff to know when the patient arrives. 
+        Create short key words or phrases and return them in a list comma seperated.
+        Example: "Has chest pain, Has heart condition, has allergies"
+    """
+    analysis = client.responses.create(model="gpt-5.2", input=analyze_prompt)
+    return analysis.output_text.strip()
 
 ask_questions(q.section_7_logistics)
+info = analyze_Logistics(master_transcript) 
+info_list = ast.literal_eval(info) 
+PID = ts.create_patient(info_list[0], info_list[1], info_list[2], info_list[3], info_list[4])
+
 ask_questions(q.section_1_danger_screening)
 ask_questions(q.section_2_chief_complaint)
 match (pathway):
@@ -222,10 +270,22 @@ elif ((40 in affirmative_responses) and (42 in affirmative_responses)):
     urgency += 25
 elif ((35 in affirmative_responses) and (38 in affirmative_responses)):
     urgency += 10
+if urgency >= 100:
+    print("ALARM: Urgency threshold exceeded. Immediate attention required.")
+elif urgency >= 85:
+    status = "Red"
+elif urgency >= 40:
+    status = "Yellow"
+else:
+    status = "Green"
 
-print(f"Urgency: {urgency}")
 
 
+ts.set_patient_priority(PID, urgency, status,)
+
+key_notes = analyze_Master_Transcript(master_transcript)
+
+ts.add_key_note(PID, key_notes, created_by="AI Triage Assistant")
 
 #send audio 
 #jasmine analysis

@@ -1,13 +1,13 @@
 # triage_service.py
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from bson import ObjectId
 from db import client, db, keynotes_col, patients_col, triage_priority_col
 from pymongo.errors import ServerSelectionTimeoutError
 
 # -------------------------------
-# 2. TEST CONNECTION
+# TEST CONNECTION
 # -------------------------------
 try:
     # ping the server
@@ -21,6 +21,30 @@ except ServerSelectionTimeoutError as e:
 except Exception as e:
     print("Failed to connect to MongoDB")
     print("Error:", e)
+
+
+def increment_time(
+    base_time: datetime | None = None,
+    *,
+    hours: int = 0,
+    minutes: int = 0,
+    seconds: int = 0,
+) -> datetime:
+    """
+    Return a datetime moved forward by the requested amount.
+    Defaults to the current UTC time when no base_time is provided.
+    """
+    if base_time is None:
+        base_time = datetime.utcnow()
+
+    return base_time + timedelta(hours=hours, minutes=minutes, seconds=seconds)
+
+
+def _to_object_id(patient_id: str) -> ObjectId:
+    try:
+        return ObjectId(patient_id)
+    except Exception as exc:
+        raise ValueError("Invalid patient_id format") from exc
 
 
 def create_patient(first_name: str, last_name: str, dob: str, phone_number: str, gender: str | None = None) -> str:
@@ -44,10 +68,7 @@ def get_patient(patient_id: str) -> dict | None:
     """
     Retrieve a single patient document by its _id (as string).
     """
-    try:
-        oid = ObjectId(patient_id)
-    except Exception:
-        raise ValueError("Invalid patient_id format")
+    oid = _to_object_id(patient_id)
 
     doc = patients_col.find_one({"_id": oid})
     if not doc:
@@ -61,10 +82,7 @@ def add_key_note(patient_id: str, note_text: str, created_by: str | None = None)
     """
     Add an important note to keyNotes for a given patient.
     """
-    try:
-        oid = ObjectId(patient_id)
-    except Exception:
-        raise ValueError("Invalid patient_id format")
+    oid = _to_object_id(patient_id)
 
     doc = {
         "patientId": oid,
@@ -87,10 +105,7 @@ def set_triage_priority(
     Upsert the triage priority for a patient.
     priority_status must be one of: 'green', 'yellow', 'red' (enforced by Mongo validator).
     """
-    try:
-        oid = ObjectId(patient_id)
-    except Exception:
-        raise ValueError("Invalid patient_id format")
+    oid = _to_object_id(patient_id)
 
     update_doc = {
         "patientId": oid,
@@ -121,7 +136,7 @@ def get_patient_details(patient_id: str) -> dict | None:
     if not patient:
         return None
 
-    oid = ObjectId(patient_id)
+    oid = _to_object_id(patient_id)
 
     # Fetch notes
     notes_cursor = keynotes_col.find({"patientId": oid}).sort("createdAt", -1)
@@ -142,3 +157,80 @@ def get_patient_details(patient_id: str) -> dict | None:
         "keyNotes": notes,
         "triagePriority": triage,
     }
+
+
+def get_patient_priority(patient_id: str) -> int | None:
+    """
+    Return the patient's numeric priority level, or None if no triage record exists.
+    """
+    oid = _to_object_id(patient_id)
+    triage = triage_priority_col.find_one({"patientId": oid}, {"priorityLevel": 1})
+    if not triage:
+        return None
+
+    try:
+        return int(triage["priorityLevel"])
+    except (TypeError, ValueError):
+        return None
+
+
+def set_patient_priority(
+    patient_id: str,
+    priority_level: int,
+    priority_status: str = "waiting",
+    reason: str | None = None,
+    assigned_nurse: str | None = None,
+) -> None:
+    
+    set_triage_priority(
+        patient_id=patient_id,
+        priority_level=str(priority_level),
+        priority_status=priority_status,
+        reason=reason,
+        assigned_nurse=assigned_nurse,
+    )
+
+
+def pop_admitted_patients_from_queue() -> list[dict]:
+    """
+    Remove patients whose triage status is 'admitted' from the queue.
+    Returns the removed triage records.
+    """
+    admitted_records = list(triage_priority_col.find({"priorityStatus": "admitted"}))
+    if not admitted_records:
+        return []
+
+    patient_ids = [record["patientId"] for record in admitted_records]
+    triage_priority_col.delete_many({"patientId": {"$in": patient_ids}})
+
+    removed = []
+    for record in admitted_records:
+        record["_id"] = str(record["_id"])
+        record["patientId"] = str(record["patientId"])
+        removed.append(record)
+
+    return removed
+
+
+def sort_patients_by_priority() -> list[dict]:
+    """
+    Return patient queue entries sorted from highest priority (99) to lowest (10).
+    """
+    queue = []
+
+    for triage in triage_priority_col.find():
+        patient_id = str(triage["patientId"])
+        details = get_patient_details(patient_id)
+        if not details:
+            continue
+
+        try:
+            numeric_priority = int(triage.get("priorityLevel", 0))
+        except (TypeError, ValueError):
+            numeric_priority = 0
+
+        details["numericPriority"] = numeric_priority
+        queue.append(details)
+
+    queue.sort(key=lambda item: item["numericPriority"], reverse=True)
+    return queue

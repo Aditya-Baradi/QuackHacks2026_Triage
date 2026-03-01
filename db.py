@@ -5,11 +5,19 @@ import os
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
-ENV_PATH = Path(__file__).with_name(".env")
-load_dotenv(ENV_PATH, override=True)
+PROJECT_ROOT = Path(__file__).resolve().parent
+ENV_PATHS = [
+    PROJECT_ROOT / ".env",
+    PROJECT_ROOT / ".venv" / ".env",
+]
+
+for env_path in ENV_PATHS:
+    if env_path.exists():
+        load_dotenv(env_path, override=True)
+        break
 
 MONGODB_URI = os.getenv("MONGODB_URI")
-DB_NAME = os.getenv("MONGODB_DB_NAME", "triage_db")
+DB_NAME = os.getenv("MONGODB_DB_NAME") or os.getenv("MONGO_DB_NAME", "triage_db")
 
 if not MONGODB_URI:
     raise ValueError("MONGODB_URI is not set in the environment variables")
@@ -27,5 +35,4 @@ db = client[DB_NAME]
 patients_col = db["patients"]
 keynotes_col = db["keyNotes"]
 triage_priority_col = db["triagePriority"]
-
 

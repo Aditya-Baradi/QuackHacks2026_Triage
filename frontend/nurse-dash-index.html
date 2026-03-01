@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Quack and Assess – Nurse Dashboard</title>
+
+  <!-- League Spartan for titles -->
+  <link
+    href="https://fonts.googleapis.com/css2?family=League+Spartan:wght@500;600;700&display=swap"
+    rel="stylesheet"
+  />
+
+  <!-- System font stack for body -->
+  <link rel="stylesheet" href="nurse-dash-style.css" />
+</head>
+<body>
+  <!-- Top header with logo + title -->
+  <header class="top-bar">
+    <div class="top-bar-left">
+      <img
+        src="assets/logo.svg"
+        alt="Quack and Assess logo"
+        class="logo-img"
+      />
+      <div>
+        <h1 class="app-title">Quack and Assess</h1>
+        <p class="app-subtitle">Triage Nurse Dashboard</p>
+      </div>
+    </div>
+  </header>
+
+  <div class="dashboard">
+    <!-- LEFT SIDEBAR: Nurse + Recent Admits -->
+    <aside class="sidebar card">
+      <div class="sidebar-header">
+        <div class="avatar-circle">A</div>
+        <div>
+          <div class="role">Nurse</div>
+          <div class="name" id="nurse-name">Nurse Adams</div>
+        </div>
+      </div>
+
+      <h2 class="section-title">Recent Admits</h2>
+      <ul class="list" id="recent-admits-list">
+        <!-- Filled by JS -->
+      </ul>
+    </aside>
+
+    <!-- CENTER: Chart + Next 5 Patients -->
+    <main class="main-content">
+      <!-- Chart / Overview -->
+      <section class="card overview-card">
+        <div class="card-header">
+          <h2 class="section-title main-section-title">Patient Flow</h2>
+        </div>
+        <div class="overview-content">
+          <div class="chart-placeholder">
+            <!-- Simple donut; later you can replace with real chart -->
+            <div class="donut">
+              <div class="donut-inner"></div>
+            </div>
+          </div>
+          <div class="chart-legend">
+            <div class="legend-item">
+              <span class="dot waiting"></span>
+              Waiting Room
+              <span class="legend-count" id="waiting-count">(0)</span>
+            </div>
+            <div class="legend-item">
+              <span class="dot admitted"></span>
+              Admitted
+              <span class="legend-count" id="admitted-count">(0)</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Next 5 Patients Table -->
+      <section class="card table-card">
+        <h2 class="section-title main-section-title">Next 5 Patients</h2>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>WT (min)</th>
+                <th>Priority</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="next-patients-body">
+              <!-- Filled by JS -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <!-- PATIENT DETAIL PANEL -->
+    <section class="card detail-panel">
+      <h2 class="section-title main-section-title">Patient Details</h2>
+
+      <div class="detail-row">
+        <span class="label">Name:</span>
+        <span id="detail-name">Select a patient</span>
+      </div>
+
+      <div class="detail-row">
+        <span class="label">DOB:</span>
+        <span id="detail-dob">—</span>
+      </div>
+
+      <div class="detail-row">
+        <span class="label">Phone:</span>
+        <span id="detail-phone">—</span>
+      </div>
+
+      <div class="detail-row">
+        <span class="label">Current Status:</span>
+        <span id="detail-status">—</span>
+      </div>
+
+      <div class="detail-row">
+        <span class="label">Key Notes:</span>
+      </div>
+      <ul class="notes-list" id="detail-notes">
+        <!-- Filled by JS -->
+      </ul>
+
+      <button class="primary-btn" id="full-view-btn">
+        Full View
+      </button>
+    </section>
+
+    <!-- RIGHT SIDEBAR: Alerts -->
+    <aside class="card alerts-panel">
+      <h2 class="section-title main-section-title">Alerts</h2>
+      <ul class="alerts-list" id="alerts-list">
+        <!-- Filled by JS -->
+      </ul>
+    </aside>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>

@@ -25,3 +25,5 @@ scipy
 numpy
 pip install sounddevice scipy openai python-dotenv
 elevenlabs
+pymongo==4.16.0
+python-dotenv==1.0.1

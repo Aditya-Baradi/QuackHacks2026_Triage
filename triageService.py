@@ -30,10 +30,6 @@ def increment_time(
     minutes: int = 0,
     seconds: int = 0,
 ) -> datetime:
-    """
-    Return a datetime moved forward by the requested amount.
-    Defaults to the current UTC time when no base_time is provided.
-    """
     if base_time is None:
         base_time = datetime.utcnow()
 
@@ -48,10 +44,6 @@ def _to_object_id(patient_id: str) -> ObjectId:
 
 
 def create_patient(first_name: str, last_name: str, dob: str, phone_number: str, gender: str | None = None) -> str:
-    """
-    Create a new patient and return the inserted _id as a string.
-    dob: keep as string for now (e.g., 'January 30th, 2000') to match your validator.
-    """
     doc = {
         "firstName": first_name,
         "lastName": last_name,
@@ -65,9 +57,6 @@ def create_patient(first_name: str, last_name: str, dob: str, phone_number: str,
     return str(result.inserted_id)
 
 def get_patient(patient_id: str) -> dict | None:
-    """
-    Retrieve a single patient document by its _id (as string).
-    """
     oid = _to_object_id(patient_id)
 
     doc = patients_col.find_one({"_id": oid})
@@ -79,9 +68,6 @@ def get_patient(patient_id: str) -> dict | None:
     return doc
 
 def add_key_note(patient_id: str, note_text: str, created_by: str | None = None) -> str:
-    """
-    Add an important note to keyNotes for a given patient.
-    """
     oid = _to_object_id(patient_id)
 
     doc = {
@@ -101,10 +87,6 @@ def set_triage_priority(
     reason: str | None = None,
     assigned_nurse: str | None = None
 ) -> None:
-    """
-    Upsert the triage priority for a patient.
-    priority_status must be one of: 'green', 'yellow', 'red' (enforced by Mongo validator).
-    """
     oid = _to_object_id(patient_id)
 
     update_doc = {

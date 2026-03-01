@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import argparse
 import re
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
+from typing import Any
 
 from config import OUTPUTS_DIR, TMP_DIR
 from models import LogQuestionRequest
@@ -13,7 +14,15 @@ from services.audio_analyzer import analyze_wav_features
 from services.transcription import transcribe_wav
 from utils.ffmpeg import convert_webm_to_wav
 
+# --- Web server (dashboard) ---
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
+
+# -----------------------------
+# Existing helpers (unchanged)
+# -----------------------------
 def _sanitize_segment(value: str | int) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", str(value))
 
@@ -79,6 +88,9 @@ def _is_webm(path: Path) -> bool:
     return path.suffix.lower() == ".webm"
 
 
+# -----------------------------
+# Your pipeline (unchanged)
+# -----------------------------
 def analyze_audio_file(
     input_audio: Path,
     patient_id: str | None = None,
@@ -90,7 +102,7 @@ def analyze_audio_file(
     """
     Main pipeline:
     - Save/convert to wav if needed
-    - Transcribe (stub by default)
+    - Transcribe
     - Extract features
     - Compute flags
     - Write transcript + analysis files
@@ -245,16 +257,6 @@ def analyze_audio_file(
 
     # -----------------------------
     # possible_slurred_speech (AUDIO METRICS ONLY)
-    #
-    # Metrics used:
-    # - speech_rate_est (slow)
-    # - pause_fraction (not mainly pauses)
-    # - pitch_variability (flat pitch)   -> NOTE: will be n/a without librosa
-    # - voiced_fraction (actually speaking)
-    # - duration_seconds (avoid tiny clips)
-    #
-    # Since pitch_variability is n/a in this build, we gate the check:
-    # if pitch_variability is None, we do NOT raise slur based on pitch flatness.
     # -----------------------------
     possible_slurred_speech = (
         (speech_rate_est is not None and speech_rate_est < 0.8)
@@ -591,6 +593,448 @@ def log_question(payload: LogQuestionRequest) -> tuple[Path, Path]:
     return output_path, transcript_path
 
 
+# ==========================================================
+# PATIENT WEBSITE + QUESTIONS (NEW)
+# ==========================================================
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+# You can loosen/tighten this later. This lets localhost frontends work.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def _load_questions() -> list[dict[str, Any]]:
+    """
+    Tries to load questions from Questions.py.
+    Supports common patterns:
+      - module dicts named section_*, symptoms_*, voice_analysis_prompts
+    Output: [{"id": 1, "text": "..."}...]
+    """
+    questions: list[dict[str, Any]] = []
+    try:
+        import Questions as Q  # Questions.py in your root
+    except Exception:
+        # fallback if Questions.py isn't available
+        return [
+            {"id": 1, "text": "What brings you in today?"},
+            {"id": 2, "text": "When did your symptoms start?"},
+            {"id": 3, "text": "On a scale of 1 to 10, how severe is it?"},
+        ]
+
+    def add_from_dict(d: dict[Any, Any]) -> None:
+        for k in sorted(d.keys(), key=lambda x: int(x) if str(x).isdigit() else str(x)):
+            try:
+                qid = int(k)
+            except Exception:
+                continue
+            text = str(d.get(k, "")).strip()
+            if not text:
+                continue
+            questions.append({"id": qid, "text": text})
+
+    # Prefer explicit ordering if you have it
+    preferred_names = [
+        "section_1_danger_screening",
+        "section_2_chief_complaint",
+        "section_4_risk_factors",
+        "section_5_meds_allergies",
+        "section_6_mental_health",
+        "section_7_logistics",
+        "voice_analysis_prompts",
+    ]
+
+    # Add preferred sections first
+    for name in preferred_names:
+        obj = getattr(Q, name, None)
+        if isinstance(obj, dict):
+            add_from_dict(obj)
+
+    # Then any other question dicts
+    for name in dir(Q):
+        if name in preferred_names:
+            continue
+        if name.startswith("section_") or name.startswith("symptoms_"):
+            obj = getattr(Q, name, None)
+            if isinstance(obj, dict):
+                add_from_dict(obj)
+
+    # De-duplicate by id preserving order
+    seen: set[int] = set()
+    deduped: list[dict[str, Any]] = []
+    for item in questions:
+        qid = int(item["id"])
+        if qid in seen:
+            continue
+        seen.add(qid)
+        deduped.append(item)
+
+    return deduped if deduped else [
+        {"id": 1, "text": "What brings you in today?"},
+        {"id": 2, "text": "When did your symptoms start?"},
+    ]
+
+
+@app.get("/api/questions")
+def api_questions():
+    return {"questions": _load_questions()}
+
+from typing import Any
+
+def _flow_questions(pathway: int) -> list[dict[str, Any]]:
+    import Questions as q
+
+    symptom_map = {
+        1: q.symptoms_chest_heart,
+        2: q.symptoms_breathing,
+        3: q.symptoms_stroke_neuro,
+        4: q.symptoms_abdominal,
+        5: q.symptoms_fever_infection,
+        6: q.symptoms_injury_trauma,
+    }
+    symptom_dict = symptom_map.get(pathway, q.symptoms_chest_heart)
+
+    def add_group(d: dict[int, str], group: str) -> list[dict[str, Any]]:
+        return [{"id": k, "text": v, "group": group} for k, v in sorted(d.items(), key=lambda x: x[0])]
+
+    # EXACT order you listed
+    out: list[dict[str, Any]] = []
+    out += add_group(q.section_7_logistics, "logistics")
+    out += add_group(q.section_1_danger_screening, "danger")
+    out += add_group(q.section_2_chief_complaint, "chief")
+    out += add_group(symptom_dict, "symptoms")
+    out += add_group(q.section_4_risk_factors, "risk")
+    out += add_group(q.section_5_meds_allergies, "meds")
+    out += add_group(q.section_6_mental_health, "mental")
+    out += add_group(q.voice_analysis_prompts, "voice")
+    return out
+
+
+@app.get("/api/flow")
+def api_flow(pathway: int = 1):
+    if pathway not in (1, 2, 3, 4, 5, 6):
+        pathway = 1
+    try:
+        return {"pathway": pathway, "questions": _flow_questions(pathway)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load Questions.py: {e}")
+
+@app.get("/patient", response_class=HTMLResponse)
+def patient_page():
+    return """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Patient Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 820px; margin: 40px auto; padding: 0 16px; }
+    .card { border: 1px solid #ddd; border-radius: 14px; padding: 18px; }
+    #qText { font-size: 22px; line-height: 1.25; margin: 10px 0 14px; cursor: pointer; }
+    .muted { color: #555; font-size: 14px; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    #recordBtn { font-size: 18px; padding: 14px 18px; border-radius: 12px; border: none; cursor: pointer; min-width: 240px; }
+    .idle { background: #111; color: #fff; }
+    .rec  { background: #b00020; color: #fff; }
+    label { font-size: 13px; color: #333; display: block; margin-top: 10px; margin-bottom: 6px; }
+    input, select { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #ccc; }
+    pre { white-space: pre-wrap; background: #f7f7f7; padding: 12px; border-radius: 10px; }
+    .tiny { font-size: 12px; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Patient Dashboard</h1>
+
+  <div class="card">
+    <div class="muted">
+      Question is spoken out loud. Click question text to replay.
+    </div>
+
+    <label>Pathway</label>
+    <select id="pathway">
+      <option value="1">1 — Chest / Heart</option>
+      <option value="2">2 — Breathing</option>
+      <option value="3">3 — Stroke / Neuro</option>
+      <option value="4">4 — Abdominal</option>
+      <option value="5">5 — Fever / Infection</option>
+      <option value="6">6 — Injury / Trauma</option>
+    </select>
+
+    <div id="qText">Loading...</div>
+    <div class="tiny" id="qMeta"></div>
+
+    <div class="row" style="margin-top: 12px;">
+      <button id="recordBtn" class="idle">Start Recording</button>
+      <span id="status" class="muted">Idle</span>
+    </div>
+
+    <label>Patient ID</label>
+    <input id="patientId" value="auto_patient" />
+
+    <label>Session ID (optional)</label>
+    <input id="sessionId" placeholder="leave blank to auto-generate" />
+
+    <label>Last upload result</label>
+    <pre id="resultBox">Waiting…</pre>
+  </div>
+
+<script>
+/**
+ * ✅ CHANGE ORDER HERE
+ * This array controls the chatbot order on the frontend.
+ * Valid group names: logistics, danger, chief, symptoms, risk, meds, mental, voice
+ */
+const ORDER = ["logistics", "danger", "chief", "symptoms", "risk", "meds", "mental", "voice"];
+// Example alternative:
+// const ORDER = ["danger", "chief", "symptoms", "risk", "meds", "mental", "logistics", "voice"];
+
+let groups = {};         // { groupName: [q,q,q] }
+let flatQuestions = [];  // final flattened list in ORDER
+let idx = 0;
+
+let mediaRecorder = null;
+let chunks = [];
+let isRecording = false;
+
+const qTextEl = document.getElementById("qText");
+const qMetaEl = document.getElementById("qMeta");
+const recordBtn = document.getElementById("recordBtn");
+const statusEl = document.getElementById("status");
+const resultBox = document.getElementById("resultBox");
+const pathwayEl = document.getElementById("pathway");
+
+function speak(text) {
+  try {
+    if (!("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
+    window.speechSynthesis.speak(u);
+  } catch (e) {}
+}
+
+function buildGroups(questionList) {
+  const g = {};
+  for (const q of questionList) {
+    const name = q.group || "unknown";
+    if (!g[name]) g[name] = [];
+    g[name].push(q);
+  }
+  // Keep natural order within each group based on the backend list order.
+  return g;
+}
+
+function flattenByOrder(g) {
+  const out = [];
+  for (const groupName of ORDER) {
+    if (g[groupName] && g[groupName].length) {
+      out.push(...g[groupName]);
+    }
+  }
+  return out;
+}
+
+function renderQuestion() {
+  if (!flatQuestions.length) {
+    qTextEl.textContent = "No questions available.";
+    qMetaEl.textContent = "";
+    return;
+  }
+  if (idx >= flatQuestions.length) {
+    qTextEl.textContent = "All questions completed. Thank you.";
+    qMetaEl.textContent = "";
+    speak("All questions completed. Thank you.");
+    return;
+  }
+  const q = flatQuestions[idx];
+  qTextEl.textContent = q.text;
+  qMetaEl.textContent = `#${idx + 1}/${flatQuestions.length}   (Group: ${q.group}, ID: ${q.id})`;
+  speak(q.text);
+}
+
+qTextEl.addEventListener("click", () => {
+  if (flatQuestions.length && idx < flatQuestions.length) speak(flatQuestions[idx].text);
+});
+
+function setUIRecording(on) {
+  isRecording = on;
+  if (on) {
+    recordBtn.textContent = "Stop Recording";
+    recordBtn.classList.remove("idle");
+    recordBtn.classList.add("rec");
+    statusEl.textContent = "Recording…";
+  } else {
+    recordBtn.textContent = "Start Recording";
+    recordBtn.classList.remove("rec");
+    recordBtn.classList.add("idle");
+    statusEl.textContent = "Idle";
+  }
+}
+
+async function startRecording() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  chunks = [];
+  mediaRecorder = new MediaRecorder(stream);
+
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) chunks.push(e.data);
+  };
+
+  mediaRecorder.onstop = async () => {
+    try {
+      const blob = new Blob(chunks, { type: mediaRecorder.mimeType || "audio/webm" });
+      await uploadRecording(blob);
+    } catch (err) {
+      resultBox.textContent = "Upload failed: " + err;
+    }
+  };
+
+  mediaRecorder.start();
+  setUIRecording(true);
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.stop();
+  }
+  setUIRecording(false);
+}
+
+async function uploadRecording(blob) {
+  resultBox.textContent = "Uploading + analyzing…";
+
+  const patientId = document.getElementById("patientId").value || "auto_patient";
+  const sessionId = document.getElementById("sessionId").value || "";
+
+  const q = flatQuestions[idx] || { text: "" };
+
+  const fd = new FormData();
+  fd.append("file", blob, "response.webm");
+  fd.append("patient_id", patientId);
+  fd.append("session_id", sessionId);
+  fd.append("question_text", q.text);
+
+  const res = await fetch("/api/analyze", { method: "POST", body: fd });
+  const data = await res.json();
+
+  if (!res.ok) {
+    resultBox.textContent = "Error: " + (data.detail || JSON.stringify(data));
+    return;
+  }
+
+  resultBox.textContent = JSON.stringify(data, null, 2);
+
+  // advance
+  idx += 1;
+  renderQuestion();
+}
+
+recordBtn.addEventListener("click", async () => {
+  try {
+    if (!isRecording) await startRecording();
+    else stopRecording();
+  } catch (err) {
+    resultBox.textContent = "Mic error: " + err;
+  }
+});
+
+async function loadFlow() {
+  const pathway = pathwayEl.value || "1";
+  const res = await fetch(`/api/flow?pathway=${encodeURIComponent(pathway)}`);
+  const data = await res.json();
+
+  const list = data.questions || [];
+  groups = buildGroups(list);
+  flatQuestions = flattenByOrder(groups);
+
+  idx = 0;
+  renderQuestion();
+}
+
+pathwayEl.addEventListener("change", loadFlow);
+
+loadFlow();
+</script>
+</body>
+</html>
+    """
+
+
+@app.post("/api/analyze")
+async def api_analyze(
+    file: UploadFile = File(...),
+    patient_id: str = Form("auto_patient"),
+    session_id: str = Form(""),
+    question_text: str = Form(""),
+):
+    """
+    Receives browser-recorded webm audio, saves to TMP, runs your existing analyze_audio_file.
+    """
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Save upload to a temp file
+    suffix = ".webm"
+    if file.filename and "." in file.filename:
+        suffix = "." + file.filename.rsplit(".", 1)[-1].lower()
+
+    upload_id = uuid4().hex
+    tmp_input = TMP_DIR / f"{upload_id}{suffix}"
+
+    try:
+        raw = await file.read()
+        tmp_input.write_bytes(raw)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read upload: {e}")
+
+    # Run pipeline (supports wav or webm)
+    try:
+        analysis_path, transcript_path = analyze_audio_file(
+            input_audio=tmp_input,
+            patient_id=patient_id or "auto_patient",
+            session_id=session_id or None,
+            question_text=question_text or "",
+            was_repeat=False,
+            repeat_reason="",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        # Best-effort cleanup of uploaded tmp file
+        try:
+            if tmp_input.exists():
+                tmp_input.unlink()
+        except Exception:
+            pass
+
+    # Return a small preview
+    transcript_preview = ""
+    try:
+        transcript_preview = transcript_path.read_text(encoding="utf-8")[:2000]
+    except Exception:
+        transcript_preview = ""
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "analysis_path": str(analysis_path),
+            "transcript_path": str(transcript_path),
+            "transcript_preview": transcript_preview,
+            "patient_id": patient_id or "auto_patient",
+            "session_id": session_id or None,
+            "question_text": question_text or "",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+    )
+
+
+# -----------------------------
+# Keep your old local test main()
+# -----------------------------
 def main():
     print("HEY")
     audio_path = Path("C:\\TryingAgain\\Recording_3.wav")  # <-- put your file here
@@ -601,7 +1045,7 @@ def main():
         session_id=None,  # auto-generates
         question_text="What is your name?",
         was_repeat=False,
-        repeat_reason=""
+        repeat_reason="",
     )
 
     print("Analysis written to:", analysis_path)
@@ -609,4 +1053,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # Running this file directly keeps your old behavior.
+    # For the patient website, run:
+    #   uvicorn main:app --reload --port 8000
     main()

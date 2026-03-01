@@ -174,10 +174,6 @@ def set_patient_priority(
 
 
 def pop_admitted_patients_from_queue() -> list[dict]:
-    """
-    Remove patients whose triage status is 'admitted' from the queue.
-    Returns the removed triage records.
-    """
     admitted_records = list(triage_priority_col.find({"priorityStatus": "admitted"}))
     if not admitted_records:
         return []
@@ -195,9 +191,6 @@ def pop_admitted_patients_from_queue() -> list[dict]:
 
 
 def sort_patients_by_priority() -> list[dict]:
-    """
-    Return patient queue entries sorted from highest priority (99) to lowest (10).
-    """
     queue = []
 
     for triage in triage_priority_col.find():

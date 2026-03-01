@@ -3,24 +3,7 @@
 from datetime import datetime, timedelta
 
 from bson import ObjectId
-from db import client, db, keynotes_col, patients_col, triage_priority_col
-from pymongo.errors import ServerSelectionTimeoutError
-
-# -------------------------------
-# TEST CONNECTION
-# -------------------------------
-try:
-    # ping the server
-    client.admin.command("ping")
-    print("Successfully connected to MongoDB Atlas!")
-except ServerSelectionTimeoutError as e:
-    print("Failed to connect to MongoDB Atlas.")
-    print("TLS/network connection failed.")
-    print("Check Atlas IP allowlist, disable VPN or antivirus TLS inspection, and verify the cluster is running.")
-    print("Details:", e)
-except Exception as e:
-    print("Failed to connect to MongoDB")
-    print("Error:", e)
+import db
 
 
 def increment_time(
@@ -43,7 +26,14 @@ def _to_object_id(patient_id: str) -> ObjectId:
         raise ValueError("Invalid patient_id format") from exc
 
 
+def _require_collections():
+    db.ensure_db()
+    return db.patients_col, db.keynotes_col, db.triage_priority_col
+
+
 def create_patient(first_name: str, last_name: str, dob: str, phone_number: str, gender: str | None = None) -> str:
+    patients_col, _, _ = _require_collections()
+
     doc = {
         "firstName": first_name,
         "lastName": last_name,
@@ -57,6 +47,7 @@ def create_patient(first_name: str, last_name: str, dob: str, phone_number: str,
     return str(result.inserted_id)
 
 def get_patient(patient_id: str) -> dict | None:
+    patients_col, _, _ = _require_collections()
     oid = _to_object_id(patient_id)
 
     doc = patients_col.find_one({"_id": oid})
@@ -68,6 +59,7 @@ def get_patient(patient_id: str) -> dict | None:
     return doc
 
 def add_key_note(patient_id: str, note_text: str, created_by: str | None = None) -> str:
+    _, keynotes_col, _ = _require_collections()
     oid = _to_object_id(patient_id)
 
     doc = {
@@ -87,6 +79,7 @@ def set_triage_priority(
     reason: str | None = None,
     assigned_nurse: str | None = None
 ) -> None:
+    _, _, triage_priority_col = _require_collections()
     oid = _to_object_id(patient_id)
 
     update_doc = {
@@ -118,6 +111,7 @@ def get_patient_details(patient_id: str) -> dict | None:
     if not patient:
         return None
 
+    _, keynotes_col, triage_priority_col = _require_collections()
     oid = _to_object_id(patient_id)
 
     # Fetch notes
@@ -145,6 +139,7 @@ def get_patient_priority(patient_id: str) -> int | None:
     """
     Return the patient's numeric priority level, or None if no triage record exists.
     """
+    _, _, triage_priority_col = _require_collections()
     oid = _to_object_id(patient_id)
     triage = triage_priority_col.find_one({"patientId": oid}, {"priorityLevel": 1})
     if not triage:
@@ -174,6 +169,7 @@ def set_patient_priority(
 
 
 def pop_admitted_patients_from_queue() -> list[dict]:
+    _, _, triage_priority_col = _require_collections()
     admitted_records = list(triage_priority_col.find({"priorityStatus": "admitted"}))
     if not admitted_records:
         return []
@@ -190,7 +186,18 @@ def pop_admitted_patients_from_queue() -> list[dict]:
     return removed
 
 
+def remove_admitted_patient_from_queue(patient_id: str) -> bool:
+    _, _, triage_priority_col = _require_collections()
+    oid = _to_object_id(patient_id)
+
+    result = triage_priority_col.delete_one(
+        {"patientId": oid, "priorityStatus": "admitted"}
+    )
+    return result.deleted_count > 0
+
+
 def sort_patients_by_priority() -> list[dict]:
+    _, _, triage_priority_col = _require_collections()
     queue = []
 
     for triage in triage_priority_col.find():

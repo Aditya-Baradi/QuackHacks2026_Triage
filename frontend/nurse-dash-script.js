@@ -1,155 +1,162 @@
 // ==============================
 // Quack & Assess Nurse Dashboard
-// Frontend for QuackHacks2026_Triage repo
 // ==============================
 
-// If you run `uvicorn api:app --reload` from the repo root,
-// your backend will be at this base URL.
+// Base URL of your FastAPI backend
 const API_BASE = "http://127.0.0.1:8000";
 const QUEUE_ENDPOINT = `${API_BASE}/api/queue`;
+const ADMITTED_ENDPOINT = `${API_BASE}/api/queue/admitted`;
+const PATIENTS_ENDPOINT = `${API_BASE}/api/patients`;
 
-// Global cache of queue items returned by sort_patients_by_priority()
+// Will hold whatever /api/queue returns
 let currentQueue = [];
+let selectedPatientId = null;
 
-// ------------------------------------------------
-// Utility helpers
-// ------------------------------------------------
+// ---------- Helpers ----------
 
-/**
- * Convert numeric priority into triage color label.
- * 3+ -> RED, 2 -> YELLOW, else GREEN
- */
-function priorityLabel(numeric) {
-  const n = Number(numeric || 0);
-  if (n >= 3) return "RED";
-  if (n === 2) return "YELLOW";
+// Convert numeric priority to label (RED/YELLOW/GREEN)
+function priorityLabel(n) {
+  const num = Number(n || 0);
+  if (num >= 70) return "RED";
+  if (num >= 40) return "YELLOW";
   return "GREEN";
 }
 
-/**
- * Returns CSS class string for a priority pill.
- */
 function priorityClass(label) {
   if (label === "RED") return "status-pill status-red";
   if (label === "YELLOW") return "status-pill status-yellow";
   return "status-pill status-green";
 }
 
-/**
- * Compute approximate wait time in minutes from triage.lastUpdated → now.
- */
-function computeWaitMinutes(triage) {
-  if (!triage || !triage.lastUpdated) return "-";
-  const updatedAt = new Date(triage.lastUpdated);
-  if (Number.isNaN(updatedAt.getTime())) return "-";
-  const now = new Date();
-  const diffMs = now - updatedAt;
-  return Math.max(0, Math.round(diffMs / 60000));
-}
-
-/**
- * Capitalize the first character in a string.
- */
 function capitalize(str) {
   if (!str) return "";
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
-// ------------------------------------------------
-// Rendering: Next 5 Patients (center table + chart counts)
-// ------------------------------------------------
+function normalizeStatus(status) {
+  return String(status || "waiting").trim().toLowerCase();
+}
+
+function getQueueCounts() {
+  let waiting = 0;
+  let admitted = 0;
+
+  currentQueue.forEach((item) => {
+    const status = normalizeStatus(item.triagePriority?.priorityStatus);
+    if (status === "admitted") {
+      admitted += 1;
+    } else {
+      waiting += 1;
+    }
+  });
+
+  return { waiting, admitted, total: waiting + admitted };
+}
+
+// ---------- Rendering: Patient flow ----------
+
+function renderPatientFlow() {
+  const waitingCount = document.getElementById("waiting-count");
+  const admittedCount = document.getElementById("admitted-count");
+  const patientTotal = document.getElementById("patient-total");
+  const donut = document.getElementById("patient-flow-donut");
+
+  if (!waitingCount || !admittedCount || !patientTotal || !donut) {
+    console.warn("Patient flow chart elements missing.");
+    return;
+  }
+
+  const { waiting, admitted, total } = getQueueCounts();
+  const waitingAngle = total ? Math.round((waiting / total) * 360) : 360;
+
+  waitingCount.textContent = `(${waiting})`;
+  admittedCount.textContent = `(${admitted})`;
+  patientTotal.textContent = String(total);
+
+  if (!total) {
+    donut.style.background = "conic-gradient(var(--border-light) 0 360deg)";
+    return;
+  }
+
+  donut.style.background = `conic-gradient(
+    var(--waiting) 0deg ${waitingAngle}deg,
+    var(--admitted) ${waitingAngle}deg 360deg
+  )`;
+}
+
+// ---------- Rendering: Next 5 patients table ----------
 
 function renderNextPatients() {
   const tbody = document.getElementById("next-patients-body");
-  const waitingCountEl = document.getElementById("waiting-count");
-  const admittedCountEl = document.getElementById("admitted-count");
+  if (!tbody) {
+    console.warn("Missing element #next-patients-body");
+    return;
+  }
 
   tbody.innerHTML = "";
-
-  let waitingCount = 0;
-  let admittedCount = 0;
 
   const topFive = currentQueue.slice(0, 5);
 
   topFive.forEach((item) => {
-    const patient = item.patient || {};
-    const triage = item.triagePriority || {};
-    const numericPriority =
-      item.numericPriority ??
-      Number(triage.priorityLevel || 0); // handled as int in backend
+    const p = item.patient || {};
+    const t = item.triagePriority || {};
+    const numeric = item.numericPriority ?? t.priorityLevel ?? 0;
 
-    const status = triage.priorityStatus || "waiting";
-    if (status === "admitted") {
-      admittedCount += 1;
-    } else {
-      waitingCount += 1;
-    }
-
-    const label = priorityLabel(numericPriority);
-    const waitMinutes = computeWaitMinutes(triage);
+    const label = priorityLabel(numeric);
+    const status = t.priorityStatus || "Waiting";
 
     const tr = document.createElement("tr");
 
-    // Name
     const nameTd = document.createElement("td");
-    nameTd.textContent = `${patient.firstName || ""} ${
-      patient.lastName || ""
-    }`.trim();
+    nameTd.textContent = `${p.firstName || ""} ${p.lastName || ""}`.trim();
 
-    // Wait time
-    const wtTd = document.createElement("td");
-    wtTd.textContent = waitMinutes;
+    const waitTd = document.createElement("td");
+    waitTd.textContent = "--";
 
-    // Priority pill (RED / YELLOW / GREEN)
     const priorityTd = document.createElement("td");
     const pill = document.createElement("span");
     pill.className = priorityClass(label);
     pill.textContent = label;
     priorityTd.appendChild(pill);
 
-    // Status chip (Waiting / Admitted)
     const statusTd = document.createElement("td");
-    const chip = document.createElement("span");
-    chip.className =
-      "status-chip " + (status === "admitted" ? "admitted" : "waiting");
-    chip.textContent = capitalize(status);
-    statusTd.appendChild(chip);
+    statusTd.textContent = capitalize(status);
 
-    // ▶ button to open detail panel
     const actionTd = document.createElement("td");
     const btn = document.createElement("button");
     btn.className = "btn-icon";
-    btn.innerHTML = "&#x25B6;"; // ▶
-    btn.addEventListener("click", () => showPatientDetails(patient._id));
+    btn.innerHTML = "&#x25B6;";
+    btn.addEventListener("click", () => {
+      showPatientDetails(p._id);
+    });
     actionTd.appendChild(btn);
 
     tr.appendChild(nameTd);
-    tr.appendChild(wtTd);
+    tr.appendChild(waitTd);
     tr.appendChild(priorityTd);
     tr.appendChild(statusTd);
     tr.appendChild(actionTd);
 
     tbody.appendChild(tr);
   });
-
-  waitingCountEl.textContent = `(${waitingCount})`;
-  admittedCountEl.textContent = `(${admittedCount})`;
 }
 
-// ------------------------------------------------
-// Rendering: Recent Admits (left sidebar)
-// ------------------------------------------------
+// ---------- Rendering: Recent admits (left panel) ----------
 
 function renderRecentAdmits() {
   const list = document.getElementById("recent-admits-list");
+  if (!list) {
+    console.warn("Missing element #recent-admits-list");
+    return;
+  }
   list.innerHTML = "";
 
-  // For hackathon v1: just take top 6 in sorted queue.
-  const items = currentQueue.slice(0, 6);
+  const items = currentQueue
+    .filter((item) => normalizeStatus(item.triagePriority?.priorityStatus) === "admitted")
+    .slice(0, 6);
 
   if (!items.length) {
     const li = document.createElement("li");
-    li.className = "list-item";
     li.textContent = "No recent admits.";
     list.appendChild(li);
     return;
@@ -158,153 +165,289 @@ function renderRecentAdmits() {
   items.forEach((item) => {
     const p = item.patient || {};
     const li = document.createElement("li");
-    li.className = "list-item";
     li.textContent = `${p.lastName || ""}, ${p.firstName || ""}`.trim();
     list.appendChild(li);
   });
 }
 
-// ------------------------------------------------
-// Rendering: Alerts (right sidebar)
-// ------------------------------------------------
+// ---------- Rendering: Alerts (right panel) ----------
 
-function addAlert(list, iconText, text) {
+function addAlert(text, icon = "!") {
+  const list = document.getElementById("alerts-list");
+  if (!list) return;
+
   const li = document.createElement("li");
   li.className = "alert-item";
 
-  const icon = document.createElement("div");
-  icon.className = "alert-icon";
-  icon.textContent = iconText;
+  const iconDiv = document.createElement("div");
+  iconDiv.className = "alert-icon";
+  iconDiv.textContent = icon;
 
-  const body = document.createElement("div");
-  body.className = "alert-text";
-  body.textContent = text;
+  const textDiv = document.createElement("div");
+  textDiv.className = "alert-text";
+  textDiv.textContent = text;
 
-  li.appendChild(icon);
-  li.appendChild(body);
+  li.appendChild(iconDiv);
+  li.appendChild(textDiv);
   list.appendChild(li);
 }
 
 function renderAlerts() {
   const list = document.getElementById("alerts-list");
+  if (!list) {
+    console.warn("Missing element #alerts-list");
+    return;
+  }
   list.innerHTML = "";
 
   currentQueue.forEach((item) => {
-    const patient = item.patient || {};
-    const triage = item.triagePriority || {};
-    const numericPriority =
-      item.numericPriority ??
-      Number(triage.priorityLevel || 0);
-
-    const label = priorityLabel(numericPriority);
-    const waitMin = computeWaitMinutes(triage);
-    const fullName = `${patient.firstName || ""} ${
-      patient.lastName || ""
-    }`.trim();
+    const p = item.patient || {};
+    const t = item.triagePriority || {};
+    const numeric = item.numericPriority ?? t.priorityLevel ?? 0;
+    const label = priorityLabel(numeric);
 
     if (label === "RED") {
-      addAlert(list, "!", `${fullName} is RED priority.`);
-    }
-
-    if (
-      waitMin !== "-" &&
-      waitMin >= 15 &&
-      triage.priorityStatus !== "admitted"
-    ) {
-      addAlert(list, "⏱", `${fullName} has been waiting ${waitMin} minutes.`);
+      addAlert(
+        `${p.firstName || ""} ${p.lastName || ""} is RED priority.`,
+        "!"
+      );
     }
   });
 
   if (!list.children.length) {
-    addAlert(list, "✓", "No critical alerts. You're all caught up!");
+    addAlert("No critical alerts. You're all caught up.", "OK");
   }
 }
 
-// ------------------------------------------------
-// Rendering: Patient Details panel
-// ------------------------------------------------
+// ---------- Rendering: Patient detail panel ----------
+
+function clearPatientDetails() {
+  const panelName = document.getElementById("detail-name");
+  const panelDob = document.getElementById("detail-dob");
+  const panelPhone = document.getElementById("detail-phone");
+  const panelStatus = document.getElementById("detail-status");
+  const panelNotes = document.getElementById("detail-notes");
+  const admitBtn = document.getElementById("admit-patient-btn");
+  const removeBtn = document.getElementById("remove-admitted-btn");
+
+  if (
+    !panelName || !panelDob || !panelPhone || !panelStatus || !panelNotes ||
+    !admitBtn || !removeBtn
+  ) {
+    return;
+  }
+
+  panelName.textContent = "Select a patient";
+  panelDob.textContent = "--";
+  panelPhone.textContent = "--";
+  panelStatus.textContent = "--";
+  panelNotes.innerHTML = "";
+
+  const li = document.createElement("li");
+  li.textContent = "No notes yet.";
+  panelNotes.appendChild(li);
+
+  admitBtn.classList.add("hidden");
+  removeBtn.classList.add("hidden");
+}
 
 function showPatientDetails(patientId) {
-  const detail = currentQueue.find(
+  const panelName = document.getElementById("detail-name");
+  const panelDob = document.getElementById("detail-dob");
+  const panelPhone = document.getElementById("detail-phone");
+  const panelStatus = document.getElementById("detail-status");
+  const panelNotes = document.getElementById("detail-notes");
+  const admitBtn = document.getElementById("admit-patient-btn");
+  const removeBtn = document.getElementById("remove-admitted-btn");
+
+  if (
+    !panelName || !panelDob || !panelPhone || !panelStatus || !panelNotes ||
+    !admitBtn || !removeBtn
+  ) {
+    console.warn("Detail panel elements missing, skipping render.");
+    return;
+  }
+
+  const entry = currentQueue.find(
     (item) => item.patient && item.patient._id === patientId
   );
-  if (!detail) return;
+  if (!entry) {
+    console.warn("No patient found for id", patientId);
+    return;
+  }
 
-  const p = detail.patient || {};
-  const triage = detail.triagePriority || {};
-  const notes = detail.keyNotes || [];
+  selectedPatientId = patientId;
 
-  // Basic identifiers
-  document.getElementById("detail-name").textContent =
-    `${p.firstName || ""} ${p.lastName || ""}`.trim() || "Unknown";
-  document.getElementById("detail-dob").textContent = p.DOB || "—";
-  document.getElementById("detail-phone").textContent = p.phoneNumber || "—";
-  document.getElementById("detail-status").textContent = triage.priorityStatus
-    ? capitalize(triage.priorityStatus)
-    : "—";
+  const p = entry.patient || {};
+  const t = entry.triagePriority || {};
+  const notes = entry.keyNotes || [];
+  const status = normalizeStatus(t.priorityStatus);
 
-  // Notes
-  const notesList = document.getElementById("detail-notes");
-  notesList.innerHTML = "";
+  panelName.textContent = `${p.firstName || ""} ${p.lastName || ""}`.trim();
+  panelDob.textContent = p.DOB || "--";
+  panelPhone.textContent = p.phoneNumber || "--";
+  panelStatus.textContent = t.priorityStatus || "--";
 
+  panelNotes.innerHTML = "";
   if (!notes.length) {
     const li = document.createElement("li");
     li.textContent = "No notes yet.";
-    notesList.appendChild(li);
+    panelNotes.appendChild(li);
   } else {
     notes.forEach((n) => {
       const li = document.createElement("li");
       li.textContent = n.noteText || "";
-      notesList.appendChild(li);
+      panelNotes.appendChild(li);
     });
   }
 
-  // Full view (future enhancement – for now just logs)
-  const fullBtn = document.getElementById("full-view-btn");
-  fullBtn.onclick = () => {
-    console.log("Open full view for patient:", patientId);
-    // example for later:
-    // window.location.href = `/patient.html?id=${encodeURIComponent(patientId)}`;
-  };
+  if (status === "admitted") {
+    admitBtn.classList.add("hidden");
+    removeBtn.classList.remove("hidden");
+  } else {
+    admitBtn.classList.remove("hidden");
+    removeBtn.classList.add("hidden");
+  }
 }
 
-// ------------------------------------------------
-// Data fetching from FastAPI
-// ------------------------------------------------
+async function admitSelectedPatient() {
+  if (!selectedPatientId) {
+    return;
+  }
 
-async function loadQueue() {
+  const entry = currentQueue.find(
+    (item) => item.patient && item.patient._id === selectedPatientId
+  );
+
+  if (!entry || normalizeStatus(entry.triagePriority?.priorityStatus) === "admitted") {
+    return;
+  }
+
+  const nurseName = document.getElementById("nurse-name")?.textContent?.trim() || null;
+  const priorityLevel = Number(
+    entry.numericPriority ?? entry.triagePriority?.priorityLevel ?? 0
+  );
+
   try {
-    const res = await fetch(QUEUE_ENDPOINT);
+    const res = await fetch(`${PATIENTS_ENDPOINT}/${selectedPatientId}/priority`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        priorityLevel,
+        priorityStatus: "admitted",
+        reason: "Admitted for treatment",
+        assignedNurse: nurseName,
+      }),
+    });
+
     if (!res.ok) {
-      console.error("Failed to load triage queue:", res.status, res.statusText);
+      console.error("Failed to admit patient:", res.status, await res.text());
       return;
     }
 
-    const data = await res.json();
+    await loadQueue();
+  } catch (err) {
+    console.error("Error admitting patient:", err);
+  }
+}
 
-    if (!Array.isArray(data)) {
-      console.error("Unexpected queue response format:", data);
+async function removeSelectedAdmittedPatient() {
+  if (!selectedPatientId) {
+    return;
+  }
+
+  const entry = currentQueue.find(
+    (item) => item.patient && item.patient._id === selectedPatientId
+  );
+
+  if (!entry || normalizeStatus(entry.triagePriority?.priorityStatus) !== "admitted") {
+    return;
+  }
+
+  try {
+    const res = await fetch(`${ADMITTED_ENDPOINT}/${selectedPatientId}`, {
+      method: "DELETE",
+    });
+
+    if (!res.ok) {
+      console.error("Failed to remove admitted patient:", res.status, await res.text());
       return;
     }
 
-    // Each item is { patient, keyNotes, triagePriority, numericPriority }
-    currentQueue = data;
+    currentQueue = currentQueue.filter(
+      (item) => !(item.patient && item.patient._id === selectedPatientId)
+    );
+    selectedPatientId = null;
 
+    clearPatientDetails();
+    renderPatientFlow();
     renderNextPatients();
     renderRecentAdmits();
     renderAlerts();
   } catch (err) {
-    console.error("Error fetching triage queue:", err);
+    console.error("Error removing admitted patient:", err);
   }
 }
 
-// ------------------------------------------------
-// Init
-// ------------------------------------------------
+// ---------- Fetch data from backend ----------
+
+async function loadQueue() {
+  try {
+    console.log("Fetching queue from:", QUEUE_ENDPOINT);
+    const res = await fetch(QUEUE_ENDPOINT);
+    console.log("Status:", res.status);
+
+    if (!res.ok) {
+      console.error("Failed to load queue:", res.status, await res.text());
+      return;
+    }
+
+    const data = await res.json();
+    console.log("Queue data:", data);
+
+    if (!Array.isArray(data)) {
+      console.error("Queue response is not an array:", data);
+      return;
+    }
+
+    currentQueue = data;
+
+    renderPatientFlow();
+    renderNextPatients();
+    renderRecentAdmits();
+    renderAlerts();
+
+    if (selectedPatientId) {
+      const selectedEntry = currentQueue.find(
+        (item) => item.patient && item.patient._id === selectedPatientId
+      );
+
+      if (selectedEntry) {
+        showPatientDetails(selectedPatientId);
+      } else {
+        selectedPatientId = null;
+        clearPatientDetails();
+      }
+    }
+  } catch (err) {
+    console.error("Error fetching queue:", err);
+  }
+}
+
+// ---------- Initialize on page load ----------
 
 document.addEventListener("DOMContentLoaded", () => {
-  loadQueue();
+  const admitBtn = document.getElementById("admit-patient-btn");
+  const removeBtn = document.getElementById("remove-admitted-btn");
+  if (admitBtn) {
+    admitBtn.addEventListener("click", admitSelectedPatient);
+  }
+  if (removeBtn) {
+    removeBtn.addEventListener("click", removeSelectedAdmittedPatient);
+  }
 
-  // Optional: auto-refresh every 30s at the nurse station
-  // setInterval(loadQueue, 30000);
+  clearPatientDetails();
+  loadQueue();
 });

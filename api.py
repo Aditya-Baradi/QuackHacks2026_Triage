@@ -11,6 +11,7 @@ from triageService import (
     add_key_note,
     set_patient_priority,
     get_patient_details,
+    remove_admitted_patient_from_queue,
     sort_patients_by_priority,
     pop_admitted_patients_from_queue,
 )
@@ -23,6 +24,7 @@ origins = [
     "http://localhost",
     "http://127.0.0.1",
     "http://localhost:5500",  # VSCode Live Server
+    "http://127.0.0.1:5500",  # VSCode Live Server
     "http://localhost:3000",  # if you use a dev server
 ]
 
@@ -121,3 +123,11 @@ def api_update_priority(patient_id: str, payload: PriorityUpdate):
 def api_pop_admitted():
     removed = pop_admitted_patients_from_queue()
     return {"removed": removed}
+
+
+@app.delete("/api/queue/admitted/{patient_id}")
+def api_remove_admitted_patient(patient_id: str):
+    removed = remove_admitted_patient_from_queue(patient_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Admitted patient not found")
+    return {"removed": True}

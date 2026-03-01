@@ -28,3 +28,4 @@ def record_audio(index):
     filename = f"Recordings/recording{index}.wav"
     write(filename, samplerate, audio)
     print(f"Saved {filename}\n")
+    return filename

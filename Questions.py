@@ -17,9 +17,9 @@ section_1_danger_screening = {
 # Section 2 — Chief Complaint
 section_2_chief_complaint = {
     11: "What brought you in today?",
-    12: "When did your symptoms start?",
-    13: "Did your symptoms begin suddenly or gradually?",
-    14: "Is the problem getting worse, better, or staying the same?",
+    12: "Did your symptoms start less than 6 hours ago?",
+    13: "Did your symptoms begin suddenly?",
+    14: "Is the problem getting worse?",
     15: "Where is the problem located? (Body area)",
     16: "On a scale of 0 to 10, how severe is your pain or discomfort?"
 }
@@ -57,7 +57,6 @@ symptoms_abdominal = {
 
 symptoms_fever_infection = {
     35: "Do you have a fever?",
-    36: "What was your highest temperature?",
     37: "Do you have chills or shaking?",
     38: "Do you have a rash?"
 }
@@ -104,11 +103,11 @@ section_6_mental_health = {
 
 # Section 7 — Logistics & Context
 section_7_logistics = {
-    64: "What is your full name?",
-    65: "What is your date of birth?",
-    66: "What is your preferred language?",
-    67: "Do you have someone with you?",
-    68: "Is there anything else the nurse should know?"
+    64: "What is your first name?",
+    65: "What is your last name?",
+    66: "What is your date of birth?",
+    67: "What is your phone number?",
+    68: "What is your sex?"
 }
 
 # Voice Analysis Prompts
